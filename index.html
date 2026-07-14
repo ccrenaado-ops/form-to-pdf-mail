@@ -1,0 +1,219 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>フォーム→PDF→下書きメール — 回答1件ずつをレポートと下書きに</title>
+<meta name="description" content="フォームの回答CSVから、1件ずつPDFレポートと宛先入りのメール下書き（.eml）を作ります。処理はすべてブラウザ内で完結し、データは外部に送信されません。">
+<style>
+/* ツール1号と同じ視覚系（CSS変数・STEP構成）。フォントだけはシステムフォントに変更:
+   本ツールは「実行時の外部通信ゼロ」が売りのため、Webフォントの読み込みも行わない */
+:root{
+  --ink:#17263B; --ink-soft:#41546E; --paper:#F3F5F4; --card:#FFFFFF; --line:#D4DAD8;
+  --primary:#3E6B8C; --secondary:#2F6B4F; --warn:#A65B2A; --gold:#C7A03C;
+  --mono:Consolas,'Courier New',monospace;
+  --serif:'Yu Mincho','Hiragino Mincho ProN',serif;
+  --sans:'Yu Gothic UI','Hiragino Kaku Gothic ProN','Meiryo',sans-serif;
+  /* 各状態の淡い地色。生HEXを規則に直書きせず、ここに集約して var() 経由で使う */
+  --tint-primary:#EAF0F4; --tint-warn:#FBF1E9; --tint-ok:#EDF3EE;
+}
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:var(--paper);color:var(--ink);font-family:var(--sans);font-size:15px;line-height:1.9}
+.wrap{max-width:880px;margin:0 auto;padding:0 20px 80px}
+header{padding:36px 0 24px;border-bottom:2px solid var(--ink);margin-bottom:8px}
+.eyebrow{font-family:var(--mono);font-size:11px;letter-spacing:.2em;color:var(--ink-soft);margin-bottom:8px}
+h1{font-family:var(--serif);font-size:26px;font-weight:800;line-height:1.5}
+.lead{font-size:13.5px;color:var(--ink-soft);margin-top:8px}
+.lead b{color:var(--secondary)}
+
+.step{background:var(--card);border:1px solid var(--line);margin-top:22px;padding:22px 24px}
+.step h2{font-family:var(--serif);font-size:17px;font-weight:700;margin-bottom:12px}
+.step h2 .no{font-family:var(--mono);font-size:12px;color:var(--primary);margin-right:10px;font-weight:500}
+/* 現在地は「✓＋文字」で示す（色だけに依存しない）。狭幅では見出しの後ろで折り返す */
+.step h2 .status{display:inline-block;margin-left:10px;font-family:var(--sans);font-size:12px;font-weight:500;color:var(--secondary);letter-spacing:.02em;word-break:break-all}
+.step h2 .status.warn{color:var(--warn);font-weight:700}
+.step h2 .status:empty{display:none}
+/* 未達ステップはマウスに加えキーボード・支援技術からも遮断する（inertはJS側で付与） */
+.step.disabled{opacity:.45;pointer-events:none}
+.hint{font-size:12.5px;color:var(--ink-soft);margin-top:8px}
+
+.drop{border:2px dashed var(--line);background:var(--paper);padding:34px 20px;text-align:center;cursor:pointer;transition:border-color .15s}
+.drop.over{border-color:var(--primary);background:var(--tint-primary)}
+.drop:focus-visible{outline:2px solid var(--primary);outline-offset:2px;border-color:var(--primary)}
+.drop p{margin:0;color:var(--ink-soft);font-size:14px}
+.drop .big{font-size:15.5px;color:var(--ink);font-weight:700;margin-bottom:4px}
+input[type=file]{display:none}
+
+table{width:100%;border-collapse:collapse;font-size:13px;margin-top:10px;background:var(--card)}
+th{background:var(--ink);color:#fff;font-weight:500;text-align:left;padding:7px 10px;font-size:12px;white-space:nowrap}
+td{border-bottom:1px solid var(--line);padding:7px 10px;vertical-align:middle}
+td.num{font-family:var(--mono);text-align:right;white-space:nowrap}
+.table-scroll{overflow-x:auto}
+tr.selected td{background:var(--tint-primary)}
+
+select,button{font-family:var(--sans);font-size:13px}
+select{padding:6px 8px;border:1px solid var(--line);background:var(--card);max-width:100%}
+.btn{display:inline-block;background:var(--ink);color:var(--card);font-weight:700;font-size:14px;padding:12px 30px;border:none;cursor:pointer;letter-spacing:.04em;border-radius:2px}
+.btn:hover{background:var(--primary)}
+.btn:disabled{background:var(--line);color:var(--ink-soft);cursor:not-allowed}
+.btn.sub{background:var(--card);color:var(--ink);border:1px solid var(--ink);font-weight:500;padding:6px 14px;font-size:12.5px}
+
+.msg-err{background:var(--tint-warn);border:1px solid var(--warn);border-left:4px solid var(--warn);padding:12px 16px;font-size:13px;margin-top:12px;line-height:1.8}
+.msg-ok{background:var(--tint-ok);border:1px solid var(--secondary);border-left:4px solid var(--secondary);padding:12px 16px;font-size:13px;margin-top:12px}
+/* 処理中（app-ui §3）。成功/失敗と混同しない中立色＋控えめな回転。動きを嫌う環境では止める */
+.msg-busy{background:var(--tint-primary);border:1px solid var(--line);border-left:4px solid var(--primary);padding:12px 16px;font-size:13px;margin-top:12px;display:flex;align-items:center;gap:10px}
+.msg-busy::before{content:"";flex:none;width:14px;height:14px;border:2px solid var(--line);border-top-color:var(--primary);border-radius:50%;animation:spin .8s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+@media(prefers-reduced-motion:reduce){.msg-busy::before{animation:none}}
+
+.map-row{display:flex;flex-wrap:wrap;gap:8px 16px;align-items:center;margin-top:10px}
+.map-row label{font-size:13.5px;font-weight:700;min-width:6.5em}
+.hint.sample{font-family:var(--mono);font-size:11.5px;color:var(--primary);margin-top:4px;word-break:break-all}
+
+/* 書き出しの2択（Outlook向け .eml ／ Gmail向け 本文コピー） */
+.draft-row{margin-top:16px;padding-top:16px;border-top:1px solid var(--line)}
+.draft-label{font-size:13.5px;font-weight:700;margin-bottom:10px}
+.draft-meta{font-size:12.5px;margin-top:8px;line-height:1.9;word-break:break-all}
+.draft-meta .k{font-weight:700;color:var(--ink-soft);margin-right:6px}
+.draft-meta .v{font-family:var(--mono);color:var(--ink)}
+.manual-body{width:100%;min-height:132px;margin-top:10px;padding:10px 12px;border:1px solid var(--line);background:var(--card);font-family:var(--mono);font-size:12px;line-height:1.8;color:var(--ink);resize:vertical}
+.manual-body:focus-visible{outline:2px solid var(--primary);outline-offset:2px}
+
+/* レポート雛形（プレビュー=PDFの元DOM）。PDFの見た目を安定させるため固定幅にし、
+   狭い画面では .table-scroll コンテナ側でスクロールさせる */
+.report{width:680px;background:var(--card);border:1px solid var(--line);padding:36px 40px;font-family:var(--sans);color:var(--ink);line-height:1.9}
+.report .r-head{border-bottom:2px solid var(--ink);padding-bottom:14px;margin-bottom:18px}
+.report .r-eyebrow{font-family:var(--mono);font-size:10px;letter-spacing:.22em;color:var(--ink-soft)}
+.report h1{font-family:var(--serif);font-size:22px;margin-top:4px}
+.report .r-date{font-size:11.5px;color:var(--ink-soft);margin-top:6px}
+.report .r-name{font-size:15px;font-weight:700;margin-bottom:4px}
+.report .r-lead{font-size:12.5px;color:var(--ink-soft);margin-bottom:14px}
+.report .r-table{font-size:12.5px}
+.report .r-table th{background:var(--paper);color:var(--ink);border-bottom:1px solid var(--line);width:34%;font-weight:700;white-space:normal;vertical-align:top}
+.report .r-table td{white-space:pre-wrap;word-break:break-word}
+.report .r-foot{font-size:10.5px;color:var(--ink-soft);margin-top:18px;border-top:1px solid var(--line);padding-top:10px}
+
+/* 診断風雛形（手札= design-system/library/01-資料 B-warm-magazine v2。クリーム×小豆×藍）。
+   実行時の外部通信ゼロが売りのため、明朝は既定の --serif（Yu Mincho）で出す（Webフォント不使用） */
+.report-diag{--d-paper:#F5EFE6;--d-ink:#2A2622;--d-soft:#726A5D;--d-accent:#8C3B4A;--d-navy:#324A5E;--d-rule:#DBD2C2;
+  background:var(--d-paper);color:var(--d-ink);font-family:var(--serif);border-color:var(--d-rule)}
+.report-diag .rd-head{border-top:3px solid var(--d-ink);border-bottom:1px solid var(--d-ink);padding:14px 0;margin-bottom:22px;text-align:center}
+.report-diag .rd-eyebrow{font-family:var(--mono);font-size:10px;letter-spacing:.28em;color:var(--d-accent)}
+.report-diag h1{font-family:var(--serif);font-size:24px;font-weight:700;margin-top:6px;color:var(--d-ink)}
+.report-diag .rd-date{font-size:11.5px;color:var(--d-soft);margin-top:6px}
+.report-diag .rd-name{font-size:17px;font-weight:700;margin-bottom:6px}
+.report-diag .rd-lead{font-size:13px;color:var(--d-soft);margin-bottom:24px;line-height:1.95}
+.report-diag .rd-item{padding:16px 0;border-bottom:1px solid var(--d-rule)}
+.report-diag .rd-item h2{font-family:var(--serif);font-size:15px;font-weight:700;color:var(--d-navy);margin-bottom:6px;letter-spacing:.02em}
+.report-diag .rd-item p{font-size:14px;line-height:1.95;white-space:pre-wrap;word-break:break-word}
+.report-diag .rd-empty{font-size:13px;color:var(--d-soft)}
+.report-diag .rd-foot{font-size:10.5px;color:var(--d-soft);margin-top:22px;border-top:1px solid var(--d-rule);padding-top:12px;text-align:center;letter-spacing:.08em}
+
+/* シンプル雛形（宛名＋回答項目だけの軽い1枚。定義リストで縦に並べる） */
+.report-simple .rs-head{margin-bottom:14px}
+.report-simple h1{font-family:var(--serif);font-size:20px;font-weight:700}
+.report-simple .rs-date{font-size:11.5px;color:var(--ink-soft);margin-top:4px}
+.report-simple .rs-name{font-size:16px;font-weight:700;margin:8px 0 18px;padding-bottom:10px;border-bottom:2px solid var(--ink)}
+.report-simple .rs-list{display:grid;grid-template-columns:34% 1fr;gap:0}
+.report-simple .rs-list dt{font-size:12.5px;font-weight:700;color:var(--ink-soft);padding:9px 12px 9px 0;border-bottom:1px solid var(--line)}
+.report-simple .rs-list dd{font-size:13px;padding:9px 0;border-bottom:1px solid var(--line);white-space:pre-wrap;word-break:break-word}
+.report-simple .rs-empty{font-size:13px;color:var(--ink-soft)}
+.report-simple .rs-foot{font-size:10.5px;color:var(--ink-soft);margin-top:20px;border-top:1px solid var(--line);padding-top:10px}
+
+footer{margin-top:48px;border-top:1px solid var(--line);padding-top:16px;font-size:11.5px;color:var(--ink-soft);line-height:1.8}
+footer a{color:var(--primary);text-decoration:none}
+footer a:hover{text-decoration:underline}
+.topnav{padding:14px 0 2px;font-size:12px}
+.topnav a{color:var(--ink-soft);text-decoration:none}
+.topnav a:hover{color:var(--primary);text-decoration:underline}
+@media(max-width:560px){h1{font-size:21px}.step{padding:16px}}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<div class="topnav"><a href="https://shunya-fujita-site.vercel.app/">← 藤田俊哉（業務自動化・AI導入サポート）のトップへ</a></div>
+
+<header>
+  <div class="eyebrow">FREE TOOL ── 業務自動化・AI導入サポート 藤田俊哉</div>
+  <h1>フォーム→PDF→下書きメール</h1>
+  <p class="lead">フォームで集めた回答CSVから、1件ずつ<b>PDFレポート</b>と<b>宛先入りのメール下書き（.eml）</b>を作ります。
+  処理はすべてお使いのブラウザの中で行われ、<b>回答データがPCの外に送信されることはありません</b>。メールの自動送信は行いません（下書きまで）。</p>
+</header>
+
+<!-- STEP 1: CSV投入 -->
+<div class="step" id="step1">
+  <h2><span class="no">STEP 1</span>回答CSVを入れる</h2>
+  <div class="drop" id="drop" role="button" tabindex="0" aria-label="回答CSVファイルを選択（クリックまたはEnterキー）">
+    <p class="big">ここにフォームの回答CSVをドラッグ&ドロップ</p>
+    <p>またはクリック／Enterキーでファイルを選択</p>
+  </div>
+  <input type="file" id="fileInput" accept=".csv,text/csv">
+  <p class="hint">対応形式: .csv（1行目=列名。文字コードはUTF-8 / Shift_JISを自動判別）・元のファイルが書き換わることはありません。</p>
+  <div id="loadMsg" aria-live="polite"></div>
+</div>
+
+<!-- STEP 2: 列の対応を確認 -->
+<div class="step disabled" id="step2" inert>
+  <h2><span class="no">STEP 2</span>列の対応を確認する</h2>
+  <p class="hint" style="margin-top:0">宛先の取り違えを防ぐため、自動で推測した対応をここで必ず確認してください。</p>
+  <div class="map-row"><label for="mapEmail">宛先メール</label><select id="mapEmail"></select></div>
+  <p class="hint sample" id="sampleEmail"></p>
+  <div class="map-row"><label for="mapName">氏名</label><select id="mapName"></select></div>
+  <p class="hint sample" id="sampleName"></p>
+  <p class="hint">上記以外の列は、すべて「回答内容」としてレポートに載ります。</p>
+  <p style="margin-top:14px"><button class="btn" id="mapOk">この対応で進む</button></p>
+  <div id="mapMsg" aria-live="polite"></div>
+</div>
+
+<!-- STEP 3: 相手を選ぶ -->
+<div class="step disabled" id="step3" inert>
+  <h2><span class="no">STEP 3</span>相手を1人選ぶ</h2>
+  <div id="rowArea"></div>
+  <div id="rowMsg"></div>
+</div>
+
+<!-- STEP 4: プレビュー -->
+<div class="step disabled" id="step4" inert>
+  <h2><span class="no">STEP 4</span>レポートを確認する</h2>
+  <div class="map-row" style="margin-top:0"><label for="tplSelect">様式</label><select id="tplSelect"></select></div>
+  <p class="hint" id="tplNote" style="margin-top:4px"></p>
+  <p class="hint" style="margin-top:8px">ここに表示されている内容が、そのままPDFになります。様式を変えると即座に切り替わります。</p>
+  <div class="table-scroll" id="previewArea"></div>
+</div>
+
+<!-- STEP 5: 書き出し -->
+<div class="step disabled" id="step5" inert>
+  <h2><span class="no">STEP 5</span>PDFとメール下書きを書き出す</h2>
+  <p style="margin-top:4px">
+    <button class="btn" id="pdfBtn" disabled>PDFをダウンロード</button>
+  </p>
+  <p class="hint">まずPDFをダウンロードし、下のどちらかの方法でメール下書きを用意してください。お使いのメールに合わせてお選びください。</p>
+
+  <!-- Outlook等: .emlを下書きとして開ける -->
+  <div class="draft-row">
+    <p class="draft-label">A. Outlook・Thunderbird・Apple Mail をお使いの方</p>
+    <button class="btn sub" id="emlBtn" disabled>メール下書き（.eml）をダウンロード</button>
+    <p class="hint">ダウンロードした .eml を開くと、宛先・件名・本文・PDF添付が入った「下書き」として開きます。内容を確認して送信してください。</p>
+  </div>
+
+  <!-- Gmail等Web版: .emlを直接開けないため本文コピーで拾う（design §6の非対称・要件Must③） -->
+  <div class="draft-row">
+    <p class="draft-label">B. Gmail など Web版メールをお使いの方</p>
+    <button class="btn sub" id="copyBtn" disabled>本文をコピー</button>
+    <p class="hint">メール作成画面に本文を貼り付け、宛先（下に表示）を入れ、上でダウンロードしたPDFを添付してください。</p>
+    <div class="draft-meta" id="draftMeta"></div>
+  </div>
+
+  <div id="exportMsg" aria-live="polite"></div>
+</div>
+
+<footer>
+  <p>本ツールの処理はすべてブラウザ内で完結し、回答データが外部に送信されることはありません（実行時の外部通信はありません）。メールの自動送信機能はありません。</p>
+  <p>制作: 藤田俊哉｜業務自動化・AI導入サポート ─ <a href="https://shunya-fujita-site.vercel.app/">サイトトップへ戻る</a>（フォーム対応・差し込みレポートの作り込みなど、業務に合わせた自動化のご相談を承ります）</p>
+</footer>
+
+</div>
+<script type="module" src="./src/main.ts"></script>
+</body>
+</html>
