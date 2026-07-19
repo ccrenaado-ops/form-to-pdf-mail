@@ -5,30 +5,82 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>フォーム→PDF→下書きメール — 回答1件ずつをレポートと下書きに</title>
 <meta name="description" content="フォームの回答CSVから、1件ずつPDFレポートと宛先入りのメール下書き（.eml）を作ります。処理はすべてブラウザ内で完結し、データは外部に送信されません。">
+<link rel="icon" href="./favicon.svg" type="image/svg+xml">
+<!--
+  付随ページ統一 / ツール2号（site-unify-plan.md ④・分岐B「ブランドスキンのみ」オーナー確定 2026-07-16）
+  基準= website/index.html（新LP参照実装）＋ works/sample-report（器の実装見本）＋ ツール1号（③・ツールUIスキンの型）
+        ＋ guardrails v3 ＋ design-system app-ui.md
+  変更= CSS/chrome層のみ（配色トークン・タイポ・ロゴ・ボタン・フォーカス・余白）。5ステップの操作フロー・
+  機能DOM・inertゲート・src/*.ts は不触（TS全7ファイル＋型定義のバイト同一を検収で確認）。
+  【§0 装飾の予算列挙（guardrails v3 §0-4）】金 3用途:
+    ① ブランドの金導線モチーフ（ロゴマーク= topnav＋フッターの2箇所）
+    ② STEP番号 .no（5個・明地 gold-text=暖白4.87でAA。works/index のセクション番号idiomと同格）
+    ③ プライマリCTAボタン背景（.btn 2個: この対応で進む／PDFをダウンロード）
+  モーション 1用途= 処理中スピナー（.msg-busy::before）。装飾でなく app-ui §3 の状態可視化で、
+  prefers-reduced-motion を尊重する。グラデ・影・blur・filter= 0（§1-10 影は不使用側を選択）。
+  フォーカスリングは gold-deep を採用（LPの gold は紙地上 2.26:1 で WCAG 1.4.11 の 3:1 未満。
+  操作UI（app-ui §7 フォーカス常時視認）のため金相の濃側 gold-deep=3.25:1 を用いる。③と同じ判断）
+  【オーナー確定 2026-07-16・2件】
+    (1) 書体= システムフォント維持（LPの3書体は Google Fonts 配信。本ツールは実行時の外部通信ゼロが
+        売りでフッターでもそう開示しているため、Webフォントは足さない）
+    (2) 報告書雛形（=PDFになるDOM）= 現状の見た目に固定。雛形が読む値は .report に --r-* としてピン留めし、
+        アプリ側のブランドトークンから切り離す（②sample-report「器のみ統一・中身はレポートのまま」と同じ判断）
+-->
 <style>
-/* ツール1号と同じ視覚系（CSS変数・STEP構成）。フォントだけはシステムフォントに変更:
-   本ツールは「実行時の外部通信ゼロ」が売りのため、Webフォントの読み込みも行わない */
+/* ═══ 共通基盤（website/index.html・works/sample-report・ツール1号 からコピー。
+      色・余白の16トークンは4面と値完全一致。書体3トークンのみ下記の理由で別値） ═══ */
 :root{
-  --ink:#17263B; --ink-soft:#41546E; --paper:#F3F5F4; --card:#FFFFFF; --line:#D4DAD8;
-  --primary:#3E6B8C; --secondary:#2F6B4F; --warn:#A65B2A; --gold:#C7A03C;
-  --mono:Consolas,'Courier New',monospace;
+  --ink:#17263B; --ink-soft:#48566D;
+  --paper:#F6F4EF; --sheet:#FCFBF8;
+  --deep:#17263B; --deep-lift:#1E3049; --deep-floor:#121E30;
+  --line:#D8D4C9; --line-strong:#97938A;
+  --on-deep:#F2EFE7; --on-deep-soft:#A9B3C4; --deep-line:rgba(242,239,231,.22);
+  --gold:#C7A03C; --gold-deep:#A6832F; --gold-text:#8A6A22;  /* 明地テキスト用の金（紙4.59/暖白4.87=AA）。深藍上は--gold(6.19) */
+  --sec-y:clamp(56px,7.5vw,92px);
+  --sec-y-s:clamp(48px,6vw,72px);
+}
+/* 書体だけは LP の3書体（Google Fonts配信）を採らず、システムフォントを維持する。
+   本ツールは「実行時の外部通信ゼロ」が売りで、フッターでもそう開示している。Webフォントを足すと
+   その開示が事実でなくなるため、明朝見出し／ゴシック本文／等幅アイキャッチという役割構造だけを揃える */
+:root{
   --serif:'Yu Mincho','Hiragino Mincho ProN',serif;
   --sans:'Yu Gothic UI','Hiragino Kaku Gothic ProN','Meiryo',sans-serif;
-  /* 各状態の淡い地色。生HEXを規則に直書きせず、ここに集約して var() 経由で使う */
-  --tint-primary:#EAF0F4; --tint-warn:#FBF1E9; --tint-ok:#EDF3EE;
+  --mono:Consolas,'Courier New',monospace;
 }
-*{margin:0;padding:0;box-sizing:border-box}
-body{background:var(--paper);color:var(--ink);font-family:var(--sans);font-size:15px;line-height:1.9}
-.wrap{max-width:880px;margin:0 auto;padding:0 20px 80px}
-header{padding:36px 0 24px;border-bottom:2px solid var(--ink);margin-bottom:8px}
-.eyebrow{font-family:var(--mono);font-size:11px;letter-spacing:.2em;color:var(--ink-soft);margin-bottom:8px}
-h1{font-family:var(--serif);font-size:26px;font-weight:800;line-height:1.5}
-.lead{font-size:13.5px;color:var(--ink-soft);margin-top:8px}
-.lead b{color:var(--secondary)}
+/* ツール固有の機能色（app-ui §2 の状態色。共通トークンとは別管理でドリフトを起こさない） */
+:root{ --secondary:#2F6B4F; --warn:#A65B2A }
 
-.step{background:var(--card);border:1px solid var(--line);margin-top:22px;padding:22px 24px}
-.step h2{font-family:var(--serif);font-size:17px;font-weight:700;margin-bottom:12px}
-.step h2 .no{font-family:var(--mono);font-size:12px;color:var(--primary);margin-right:10px;font-weight:500}
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:var(--paper);color:var(--ink);font-family:var(--sans);font-size:15.5px;line-height:1.95;letter-spacing:.04em;-webkit-font-smoothing:antialiased}
+/* 日本語の改行制御（PRINCIPLES §1-8。text-wrap:balance は index.html と同じく不使用=INC-20回避。
+   表への auto-phrase 波及は min-content を広げるため th/td で戻す=INC-16） */
+body{line-break:strict}
+h1,h2,h3,p,li,.eyebrow,.hint,.lead,.draft-label{word-break:auto-phrase}
+th,td,th *,td *{word-break:normal}
+p{text-wrap:pretty}
+/* auto-phrase でも割れる語を個別に止める（375px実測で検出。文言は変えずマークアップだけで是正） */
+.nw{white-space:nowrap}
+a:focus-visible,.drop:focus-visible,.btn:focus-visible,select:focus-visible,input:focus-visible,textarea:focus-visible{outline:2px solid var(--gold-deep);outline-offset:3px}
+.wrap{max-width:880px;margin:0 auto;padding:0 24px var(--sec-y-s)}
+
+/* ── ブランド器（topnav= 幾何ロゴ＋戻り導線） ── */
+.topnav{display:flex;align-items:center;justify-content:space-between;gap:6px 18px;flex-wrap:wrap;padding:16px 0 4px}
+.brand{display:inline-flex;align-items:center;gap:11px;text-decoration:none;min-height:44px}
+.brand svg{width:30px;height:30px;color:var(--ink);flex:none}
+.brand .nm{font-family:var(--serif);font-weight:800;font-size:16.5px;letter-spacing:.05em;line-height:1.2;color:var(--ink)}
+.brand .nm small{display:block;font-family:var(--mono);font-size:8.5px;letter-spacing:.26em;color:var(--ink-soft);font-weight:400;margin-top:2px}
+.topnav .back{display:inline-flex;align-items:center;min-height:44px;font-size:12.5px;color:var(--ink-soft);text-decoration:none}
+.topnav .back:hover{color:var(--ink);text-decoration:underline;text-underline-offset:3px}
+
+header{padding:26px 0 24px;border-bottom:2px solid var(--ink);margin-bottom:8px}
+.eyebrow{font-family:var(--mono);font-size:12px;letter-spacing:.14em;color:var(--ink-soft);margin-bottom:10px}
+h1{font-family:var(--serif);font-size:26px;font-weight:800;line-height:1.5;letter-spacing:.01em}
+.lead{font-size:13.5px;color:var(--ink-soft);margin-top:8px}
+.lead b{color:var(--ink)}
+
+.step{background:var(--sheet);border:1px solid var(--line);margin-top:22px;padding:22px 24px}
+.step h2{font-family:var(--serif);font-size:17px;font-weight:700;margin-bottom:12px;letter-spacing:.01em}
+.step h2 .no{font-family:var(--mono);font-size:12px;color:var(--gold-text);margin-right:10px;font-weight:600;letter-spacing:.08em}
 /* 現在地は「✓＋文字」で示す（色だけに依存しない）。狭幅では見出しの後ろで折り返す */
 .step h2 .status{display:inline-block;margin-left:10px;font-family:var(--sans);font-size:12px;font-weight:500;color:var(--secondary);letter-spacing:.02em;word-break:break-all}
 .step h2 .status.warn{color:var(--warn);font-weight:700}
@@ -37,38 +89,42 @@ h1{font-family:var(--serif);font-size:26px;font-weight:800;line-height:1.5}
 .step.disabled{opacity:.45;pointer-events:none}
 .hint{font-size:12.5px;color:var(--ink-soft);margin-top:8px}
 
-.drop{border:2px dashed var(--line);background:var(--paper);padding:34px 20px;text-align:center;cursor:pointer;transition:border-color .15s}
-.drop.over{border-color:var(--primary);background:var(--tint-primary)}
-.drop:focus-visible{outline:2px solid var(--primary);outline-offset:2px;border-color:var(--primary)}
+.drop{border:2px dashed var(--line-strong);background:var(--paper);padding:34px 20px;text-align:center;cursor:pointer;transition:border-color .15s}
+.drop.over{border-color:var(--gold-deep);background:var(--sheet)}
+.drop:focus-visible{border-color:var(--gold-deep)}
 .drop p{margin:0;color:var(--ink-soft);font-size:14px}
 .drop .big{font-size:15.5px;color:var(--ink);font-weight:700;margin-bottom:4px}
 input[type=file]{display:none}
 
-table{width:100%;border-collapse:collapse;font-size:13px;margin-top:10px;background:var(--card)}
-th{background:var(--ink);color:#fff;font-weight:500;text-align:left;padding:7px 10px;font-size:12px;white-space:nowrap}
+table{width:100%;border-collapse:collapse;font-size:13px;margin-top:10px;background:var(--sheet)}
+th{background:var(--deep);color:var(--on-deep);font-weight:500;text-align:left;padding:7px 10px;font-size:12px;white-space:nowrap}
 td{border-bottom:1px solid var(--line);padding:7px 10px;vertical-align:middle}
 td.num{font-family:var(--mono);text-align:right;white-space:nowrap}
 .table-scroll{overflow-x:auto}
-tr.selected td{background:var(--tint-primary)}
+/* 選択中の行。色だけでなくボタン文言も「この人を選ぶ」→「選択中」に変わる（app-ui §7） */
+tr.selected td{background:var(--paper)}
 
 select,button{font-family:var(--sans);font-size:13px}
-select{padding:6px 8px;border:1px solid var(--line);background:var(--card);max-width:100%}
-.btn{display:inline-block;background:var(--ink);color:var(--card);font-weight:700;font-size:14px;padding:12px 30px;border:none;cursor:pointer;letter-spacing:.04em;border-radius:2px}
-.btn:hover{background:var(--primary)}
+select{padding:8px 10px;border:1px solid var(--line-strong);background:var(--sheet);color:var(--ink);max-width:100%;min-height:44px}
+.btn{display:inline-flex;align-items:center;justify-content:center;min-height:48px;background:var(--gold);color:var(--ink);font-weight:700;font-size:14.5px;padding:12px 32px;border:none;cursor:pointer;letter-spacing:.06em;border-radius:2px}
+.btn:hover{background:var(--gold-deep);color:#fff}
 .btn:disabled{background:var(--line);color:var(--ink-soft);cursor:not-allowed}
-.btn.sub{background:var(--card);color:var(--ink);border:1px solid var(--ink);font-weight:500;padding:6px 14px;font-size:12.5px}
+.btn.sub{min-height:44px;background:var(--sheet);color:var(--ink);border:1px solid var(--line-strong);font-weight:500;padding:8px 16px;font-size:12.5px}
+.btn.sub:hover{background:var(--paper);color:var(--ink)}
+.btn.sub:disabled{background:var(--line);color:var(--ink-soft);border-color:var(--line)}
 
-.msg-err{background:var(--tint-warn);border:1px solid var(--warn);border-left:4px solid var(--warn);padding:12px 16px;font-size:13px;margin-top:12px;line-height:1.8}
-.msg-ok{background:var(--tint-ok);border:1px solid var(--secondary);border-left:4px solid var(--secondary);padding:12px 16px;font-size:13px;margin-top:12px}
+.msg-err{background:var(--paper);border:1px solid var(--warn);border-left:4px solid var(--warn);padding:12px 16px;font-size:13px;margin-top:12px;line-height:1.8}
+.msg-ok{background:var(--paper);border:1px solid var(--secondary);border-left:4px solid var(--secondary);padding:12px 16px;font-size:13px;margin-top:12px}
 /* 処理中（app-ui §3）。成功/失敗と混同しない中立色＋控えめな回転。動きを嫌う環境では止める */
-.msg-busy{background:var(--tint-primary);border:1px solid var(--line);border-left:4px solid var(--primary);padding:12px 16px;font-size:13px;margin-top:12px;display:flex;align-items:center;gap:10px}
-.msg-busy::before{content:"";flex:none;width:14px;height:14px;border:2px solid var(--line);border-top-color:var(--primary);border-radius:50%;animation:spin .8s linear infinite}
+.msg-busy{background:var(--paper);border:1px solid var(--line);border-left:4px solid var(--ink-soft);padding:12px 16px;font-size:13px;margin-top:12px;display:flex;align-items:center;gap:10px}
+.msg-busy::before{content:"";flex:none;width:14px;height:14px;border:2px solid var(--line);border-top-color:var(--ink-soft);border-radius:50%;animation:spin .8s linear infinite}
 @keyframes spin{to{transform:rotate(360deg)}}
 @media(prefers-reduced-motion:reduce){.msg-busy::before{animation:none}}
 
 .map-row{display:flex;flex-wrap:wrap;gap:8px 16px;align-items:center;margin-top:10px}
 .map-row label{font-size:13.5px;font-weight:700;min-width:6.5em}
-.hint.sample{font-family:var(--mono);font-size:11.5px;color:var(--primary);margin-top:4px;word-break:break-all}
+/* 対応付けの実データ見本。宛先の取り違えを目視で止める要なので本文色で出す */
+.hint.sample{font-family:var(--mono);font-size:11.5px;color:var(--ink);margin-top:4px;word-break:break-all}
 
 /* 書き出しの2択（Outlook向け .eml ／ Gmail向け 本文コピー） */
 .draft-row{margin-top:16px;padding-top:16px;border-top:1px solid var(--line)}
@@ -76,22 +132,26 @@ select{padding:6px 8px;border:1px solid var(--line);background:var(--card);max-w
 .draft-meta{font-size:12.5px;margin-top:8px;line-height:1.9;word-break:break-all}
 .draft-meta .k{font-weight:700;color:var(--ink-soft);margin-right:6px}
 .draft-meta .v{font-family:var(--mono);color:var(--ink)}
-.manual-body{width:100%;min-height:132px;margin-top:10px;padding:10px 12px;border:1px solid var(--line);background:var(--card);font-family:var(--mono);font-size:12px;line-height:1.8;color:var(--ink);resize:vertical}
-.manual-body:focus-visible{outline:2px solid var(--primary);outline-offset:2px}
+.manual-body{width:100%;min-height:132px;margin-top:10px;padding:10px 12px;border:1px solid var(--line-strong);background:var(--sheet);font-family:var(--mono);font-size:12px;line-height:1.8;color:var(--ink);resize:vertical}
 
-/* レポート雛形（プレビュー=PDFの元DOM）。PDFの見た目を安定させるため固定幅にし、
-   狭い画面では .table-scroll コンテナ側でスクロールさせる */
-.report{width:680px;background:var(--card);border:1px solid var(--line);padding:36px 40px;font-family:var(--sans);color:var(--ink);line-height:1.9}
-.report .r-head{border-bottom:2px solid var(--ink);padding-bottom:14px;margin-bottom:18px}
-.report .r-eyebrow{font-family:var(--mono);font-size:10px;letter-spacing:.22em;color:var(--ink-soft)}
-.report h1{font-family:var(--serif);font-size:22px;margin-top:4px}
-.report .r-date{font-size:11.5px;color:var(--ink-soft);margin-top:6px}
+/* ── 報告書雛形（プレビュー=PDFの元DOM。html2pdfがこのノードをそのままラスタライズする） ──
+   これはアプリのchromeではなく「ツールの出力物」なので、見た目を現行から動かさない（オーナー確定 2026-07-16。
+   ②sample-report の「器のみ統一・中身はレポートのまま」と同じ判断）。雛形が読む色・字間・改行制御を
+   ここで現行値に閉じ、アプリ側のブランドトークン（--paper/--sheet/--line/--ink-soft・body の字間）を流し込まない。
+   PDFの見た目を安定させるため固定幅にし、狭い画面では .table-scroll コンテナ側でスクロールさせる */
+.report{--r-sheet:#FFFFFF;--r-th:#F3F5F4;--r-line:#D4DAD8;--r-ink:#17263B;--r-soft:#41546E;
+  width:680px;background:var(--r-sheet);border:1px solid var(--r-line);padding:36px 40px;font-family:var(--sans);font-size:15px;color:var(--r-ink);line-height:1.9}
+.report,.report h1,.report p{letter-spacing:normal;word-break:normal;text-wrap:wrap;line-break:auto}
+.report .r-head{border-bottom:2px solid var(--r-ink);padding-bottom:14px;margin-bottom:18px}
+.report .r-eyebrow{font-family:var(--mono);font-size:10px;letter-spacing:.22em;color:var(--r-soft)}
+.report h1{font-family:var(--serif);font-size:22px;font-weight:800;line-height:1.5;margin-top:4px}
+.report .r-date{font-size:11.5px;color:var(--r-soft);margin-top:6px}
 .report .r-name{font-size:15px;font-weight:700;margin-bottom:4px}
-.report .r-lead{font-size:12.5px;color:var(--ink-soft);margin-bottom:14px}
-.report .r-table{font-size:12.5px}
-.report .r-table th{background:var(--paper);color:var(--ink);border-bottom:1px solid var(--line);width:34%;font-weight:700;white-space:normal;vertical-align:top}
-.report .r-table td{white-space:pre-wrap;word-break:break-word}
-.report .r-foot{font-size:10.5px;color:var(--ink-soft);margin-top:18px;border-top:1px solid var(--line);padding-top:10px}
+.report .r-lead{font-size:12.5px;color:var(--r-soft);margin-bottom:14px}
+.report .r-table{font-size:12.5px;background:var(--r-sheet)}
+.report .r-table th{background:var(--r-th);color:var(--r-ink);border-bottom:1px solid var(--r-line);width:34%;font-weight:700;white-space:normal;vertical-align:top}
+.report .r-table td{border-bottom:1px solid var(--r-line);white-space:pre-wrap;word-break:break-word}
+.report .r-foot{font-size:10.5px;color:var(--r-soft);margin-top:18px;border-top:1px solid var(--r-line);padding-top:10px}
 
 /* 診断風雛形（手札= design-system/library/01-資料 B-warm-magazine v2。クリーム×小豆×藍）。
    実行時の外部通信ゼロが売りのため、明朝は既定の --serif（Yu Mincho）で出す（Webフォント不使用） */
@@ -109,30 +169,38 @@ select{padding:6px 8px;border:1px solid var(--line);background:var(--card);max-w
 .report-diag .rd-empty{font-size:13px;color:var(--d-soft)}
 .report-diag .rd-foot{font-size:10.5px;color:var(--d-soft);margin-top:22px;border-top:1px solid var(--d-rule);padding-top:12px;text-align:center;letter-spacing:.08em}
 
-/* シンプル雛形（宛名＋回答項目だけの軽い1枚。定義リストで縦に並べる） */
+/* シンプル雛形（宛名＋回答項目だけの軽い1枚。定義リストで縦に並べる）。
+   出力物なので .report と同じく --r-* のピン留め値を読む（アプリのブランドトークンを流し込まない） */
 .report-simple .rs-head{margin-bottom:14px}
 .report-simple h1{font-family:var(--serif);font-size:20px;font-weight:700}
-.report-simple .rs-date{font-size:11.5px;color:var(--ink-soft);margin-top:4px}
-.report-simple .rs-name{font-size:16px;font-weight:700;margin:8px 0 18px;padding-bottom:10px;border-bottom:2px solid var(--ink)}
+.report-simple .rs-date{font-size:11.5px;color:var(--r-soft);margin-top:4px}
+.report-simple .rs-name{font-size:16px;font-weight:700;margin:8px 0 18px;padding-bottom:10px;border-bottom:2px solid var(--r-ink)}
 .report-simple .rs-list{display:grid;grid-template-columns:34% 1fr;gap:0}
-.report-simple .rs-list dt{font-size:12.5px;font-weight:700;color:var(--ink-soft);padding:9px 12px 9px 0;border-bottom:1px solid var(--line)}
-.report-simple .rs-list dd{font-size:13px;padding:9px 0;border-bottom:1px solid var(--line);white-space:pre-wrap;word-break:break-word}
-.report-simple .rs-empty{font-size:13px;color:var(--ink-soft)}
-.report-simple .rs-foot{font-size:10.5px;color:var(--ink-soft);margin-top:20px;border-top:1px solid var(--line);padding-top:10px}
+.report-simple .rs-list dt{font-size:12.5px;font-weight:700;color:var(--r-soft);padding:9px 12px 9px 0;border-bottom:1px solid var(--r-line)}
+.report-simple .rs-list dd{font-size:13px;padding:9px 0;border-bottom:1px solid var(--r-line);white-space:pre-wrap;word-break:break-word}
+.report-simple .rs-empty{font-size:13px;color:var(--r-soft)}
+.report-simple .rs-foot{font-size:10.5px;color:var(--r-soft);margin-top:20px;border-top:1px solid var(--r-line);padding-top:10px}
 
-footer{margin-top:48px;border-top:1px solid var(--line);padding-top:16px;font-size:11.5px;color:var(--ink-soft);line-height:1.8}
-footer a{color:var(--primary);text-decoration:none}
-footer a:hover{text-decoration:underline}
-.topnav{padding:14px 0 2px;font-size:12px}
-.topnav a{color:var(--ink-soft);text-decoration:none}
-.topnav a:hover{color:var(--primary);text-decoration:underline}
-@media(max-width:560px){h1{font-size:21px}.step{padding:16px}}
+footer{margin-top:56px;border-top:2px solid var(--ink);padding-top:20px;font-size:12px;color:var(--ink-soft);line-height:1.9}
+.foot-brand{display:flex;align-items:center;gap:10px;margin-bottom:12px}
+.foot-brand svg{width:24px;height:24px;color:var(--ink);flex:none}
+.foot-brand .nm{font-family:var(--serif);font-weight:700;font-size:14.5px;color:var(--ink)}
+footer p{margin-bottom:6px}
+footer a{color:var(--ink);display:inline-flex;align-items:center;min-height:44px;text-decoration:underline;text-underline-offset:4px;text-decoration-color:var(--line-strong)}
+footer a:hover{text-decoration-color:var(--ink)}
+@media(max-width:560px){h1{font-size:21px}.step{padding:16px}.wrap{padding:0 20px var(--sec-y-s)}.topnav{padding-top:12px}}
 </style>
 </head>
 <body>
 <div class="wrap">
 
-<div class="topnav"><a href="https://shunya-fujita-site.vercel.app/">← 藤田俊哉（業務自動化・AI導入サポート）のトップへ</a></div>
+<div class="topnav">
+  <a class="brand" href="https://shunya-fujita-site.vercel.app/" aria-label="藤田俊哉 トップページへ">
+    <svg viewBox="0 0 32 32" aria-hidden="true"><rect x="1.5" y="1.5" width="29" height="29" fill="none" stroke="currentColor" stroke-width="2.2"/><path d="M8 10h7M8 15.5h7M8 21h7" stroke="currentColor" stroke-width="2" fill="none"/><path d="M8 25.5h8.5L26 9.5" stroke="#C7A03C" stroke-width="2.4" fill="none"/></svg>
+    <span class="nm">藤田俊哉<small>SHUNYA FUJITA</small></span>
+  </a>
+  <a class="back" href="https://shunya-fujita-site.vercel.app/">← 藤田俊哉（業務自動化・AI導入サポート）のトップへ</a>
+</div>
 
 <header>
   <div class="eyebrow">FREE TOOL ── 業務自動化・AI導入サポート 藤田俊哉</div>
@@ -188,7 +256,7 @@ footer a:hover{text-decoration:underline}
   <p style="margin-top:4px">
     <button class="btn" id="pdfBtn" disabled>PDFをダウンロード</button>
   </p>
-  <p class="hint">まずPDFをダウンロードし、下のどちらかの方法でメール下書きを用意してください。お使いのメールに合わせてお選びください。</p>
+  <p class="hint">まずPDFをダウンロードし、下のどちらかの方法でメール<span class="nw">下書き</span>を用意してください。お使いのメールに合わせてお選びください。</p>
 
   <!-- Outlook等: .emlを下書きとして開ける -->
   <div class="draft-row">
@@ -209,6 +277,10 @@ footer a:hover{text-decoration:underline}
 </div>
 
 <footer>
+  <div class="foot-brand">
+    <svg viewBox="0 0 32 32" aria-hidden="true"><rect x="1.5" y="1.5" width="29" height="29" fill="none" stroke="currentColor" stroke-width="2.2"/><path d="M8 10h7M8 15.5h7M8 21h7" stroke="currentColor" stroke-width="2" fill="none"/><path d="M8 25.5h8.5L26 9.5" stroke="#C7A03C" stroke-width="2.4" fill="none"/></svg>
+    <span class="nm">藤田俊哉</span>
+  </div>
   <p>本ツールの処理はすべてブラウザ内で完結し、回答データが外部に送信されることはありません（実行時の外部通信はありません）。メールの自動送信機能はありません。</p>
   <p>制作: 藤田俊哉｜業務自動化・AI導入サポート ─ <a href="https://shunya-fujita-site.vercel.app/">サイトトップへ戻る</a>（フォーム対応・差し込みレポートの作り込みなど、業務に合わせた自動化のご相談を承ります）</p>
 </footer>
